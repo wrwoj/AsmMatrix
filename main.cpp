@@ -243,6 +243,142 @@ int test_matrix_scalar_multiplication() {
     return errors;
 }
 
+// Test: Matrix Multiplication for 16x16 Matrices
+int test_matrix_multiplication_16x16() {
+    int errors = 0;
+    const char *test_name = "Matrix Multiplication (16x16)";
+    int size = 16;
+
+    // Create matrices: A and B are 16x16; result will be 16x16.
+    Matrix *a = asm_matrix_create(size, size);
+    Matrix *b = asm_matrix_create(size, size);
+    Matrix *result = asm_matrix_create(size, size);
+
+    // Fill matrix A with sequential values:
+    // A[i][j] = i * size + j + 1, for i,j = 0...15.
+    for (int i = 0; i < size; i++) {
+        for (int j = 0; j < size; j++) {
+            asm_matrix_set(a, i, j, (float)(i * size + j + 1));
+        }
+    }
+
+    // Fill matrix B with sequential values using the same pattern.
+    for (int i = 0; i < size; i++) {
+        for (int j = 0; j < size; j++) {
+            asm_matrix_set(b, i, j, (float)(i * size + j + 1));
+        }
+    }
+
+    // Compute expected result using a simple C implementation:
+    // expected[i][j] = sum_{k=0}^{15} A[i][k] * B[k][j]
+    float expected[16][16];
+    for (int i = 0; i < size; i++) {
+        for (int j = 0; j < size; j++) {
+            float sum = 0.0f;
+            for (int k = 0; k < size; k++) {
+                // A[i][k] = i*size + k + 1, B[k][j] = k*size + j + 1.
+                float a_val = (float)(i * size + k + 1);
+                float b_val = (float)(k * size + j + 1);
+                sum += a_val * b_val;
+            }
+            expected[i][j] = sum;
+        }
+    }
+
+    // Use the assembly multiplication function.
+    asm_matrix_multiply(a, b, result);
+
+    // Check each element against the expected result.
+    for (int i = 0; i < size; i++) {
+        for (int j = 0; j < size; j++) {
+            float res_val = asm_matrix_get(result, i, j);
+            if (!float_equal(res_val, expected[i][j], 1e-3)) {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "Incorrect value at (%d, %d): expected %.3f, got %.3f",
+                         i, j, expected[i][j], res_val);
+                REPORT_FAIL(test_name, msg);
+                errors++;
+            }
+        }
+    }
+
+    if (errors == 0)
+        REPORT_PASS(test_name);
+
+    asm_matrix_free(a);
+    asm_matrix_free(b);
+    asm_matrix_free(result);
+    return errors;
+}
+
+// Test: Matrix Multiplication for 32x32 Matrices
+int test_matrix_multiplication_32x32() {
+    int errors = 0;
+    const char *test_name = "Matrix Multiplication (32x32)";
+    int size = 32;
+
+    // Create matrices: A and B are 32x32; result will be 32x32.
+    Matrix *a = asm_matrix_create(size, size);
+    Matrix *b = asm_matrix_create(size, size);
+    Matrix *result = asm_matrix_create(size, size);
+
+    // Fill matrix A with sequential values:
+    // A[i][j] = i * size + j + 1, for i,j = 0...31.
+    for (int i = 0; i < size; i++) {
+        for (int j = 0; j < size; j++) {
+            asm_matrix_set(a, i, j, (float)(i * size + j + 1));
+        }
+    }
+
+    // Fill matrix B with sequential values using the same pattern.
+    for (int i = 0; i < size; i++) {
+        for (int j = 0; j < size; j++) {
+            asm_matrix_set(b, i, j, (float)(i * size + j + 1));
+        }
+    }
+
+    // Compute expected result using a simple C implementation:
+    // expected[i][j] = sum_{k=0}^{31} A[i][k] * B[k][j]
+    float expected[32][32];
+    for (int i = 0; i < size; i++) {
+        for (int j = 0; j < size; j++) {
+            float sum = 0.0f;
+            for (int k = 0; k < size; k++) {
+                // A[i][k] = i*size + k + 1, B[k][j] = k*size + j + 1.
+                float a_val = (float)(i * size + k + 1);
+                float b_val = (float)(k * size + j + 1);
+                sum += a_val * b_val;
+            }
+            expected[i][j] = sum;
+        }
+    }
+
+    // Multiply A and B using the assembly function.
+    asm_matrix_multiply(a, b, result);
+
+    // Validate each element against the expected result.
+    for (int i = 0; i < size; i++) {
+        for (int j = 0; j < size; j++) {
+            float res_val = asm_matrix_get(result, i, j);
+            if (!float_equal(res_val, expected[i][j], 1e-3)) {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "Incorrect value at (%d, %d): expected %.3f, got %.3f",
+                         i, j, expected[i][j], res_val);
+                REPORT_FAIL(test_name, msg);
+                errors++;
+            }
+        }
+    }
+
+    if (errors == 0)
+        REPORT_PASS(test_name);
+
+    asm_matrix_free(a);
+    asm_matrix_free(b);
+    asm_matrix_free(result);
+    return errors;
+}
+
 
 
 int main() {
@@ -257,8 +393,9 @@ int main() {
      total_errors += test_matrix_edge_cases();
      total_errors += test_matrix_addition();
      total_errors += test_matrix_scalar_multiplication();
-
+    total_errors += test_matrix_multiplication_16x16();
     total_errors += test_matrix_multiplication();
+    total_errors += test_matrix_multiplication_32x32();
 
     if (total_errors == 0)
         printf(COLOR_GREEN "\nAll matrix tests completed successfully.\n" COLOR_RESET);

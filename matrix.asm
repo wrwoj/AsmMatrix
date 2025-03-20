@@ -237,101 +237,188 @@ asm_matrix_scalar_mul:
 ; Returns:
 ;   - Nothing
 ;------------------------------------------------------------------------------
-; TODO: add usage of SIMD operations, optimise for L1 Cache and eliminate the usage of nonvolatile registers
+; Done: added usage of SIMD instructions
+; TODO: Contemplate eliminating the usage of nonvolatile registers
+; TODO :Cache Optimisation
 ;------------------------------------------------------------------------------
+
 asm_matrix_multiply:
-    ; Save nonvolatile registers used: RBX, RSI, RDI, R12, R13, R14.
+    ; Prologue – save callee-saved registers (and rbp for our own use)
+    push rbp
     push rbx
     push rsi
     push rdi
     push r12
     push r13
     push r14
+    push r15
 
-    ; Check that A’s columns equals B’s rows.
-    mov rax, [rcx+16]   ; rax = A_cols
-    mov r10, [rdx+8]    ; r10 = B_rows
+    ; --- Setup ---
+    ; rcx: pointer to matrix A structure.
+    ; rdx: pointer to matrix B structure.
+    ; r8 : pointer to result matrix structure.
+
+    ; Check dimensions: A_cols ([rcx+16]) must equal B_rows ([rdx+8])
+    mov rax, [rcx+16]       ; rax = A_cols
+    mov r10, [rdx+8]        ; r10 = B_rows
     cmp rax, r10
-    jne error_exit      ; dimensions do not match for multiplication
+    jne matrix_error_exit   ; dimensions mismatch
 
-    ; Load pointers to the data arrays.
-    mov rsi, [rcx]      ; rsi = pointer to A_data
-    mov rdi, [rdx]      ; rdi = pointer to B_data
-    mov rbx, [r8]       ; rbx = pointer to result data
+    ; Load pointers to data arrays.
+    mov rsi, [rcx]          ; rsi = pointer to A's data
+    mov rdi, [rdx]          ; rdi = pointer to B's data
+    mov rbx, [r8]           ; rbx = pointer to result data
 
-    ; Load matrix dimensions:
-    mov r9,  [rcx+8]    ; r9 = A_rows (number of rows in A)
-    mov r10, [rcx+16]   ; r10 = A_cols (and B_rows)
-    mov r11, [rdx+16]   ; r11 = B_cols (number of columns in B)
+    ; Load matrix dimensions.
+    mov r9, [rcx+8]         ; r9 = A_rows
+    mov r10, [rcx+16]       ; r10 = A_cols (also B_rows)
+    mov r11, [rdx+16]       ; r11 = B_cols
 
-    ; Outer loop over rows of A (index i)
-    xor r12, r12        ; r12 = i = 0
+    ; Compute B row stride in bytes = B_cols * 4.
+    mov r15, r11
+    shl r15, 2              ; r15 = B_cols * 4
+
+    ; Compute A row stride in bytes = A_cols * 4 and store it in rbp.
+    mov rbp, r10
+    shl rbp, 2              ; rbp = A_cols * 4
+
+    ; Outer loop: iterate over each row of A.
+    xor r12, r12            ; r12 = row index i = 0
 outer_loop:
     cmp r12, r9
-    jge mul_done        ; if i >= A_rows, we are done
+    jge done_outer_loop
 
-    xor r13, r13        ; r13 = j = 0
-inner_loop_j:
-    cmp r13, r11
-    jge next_i          ; if j >= B_cols, advance to next row
-
-    ; Initialize sum for result[i][j] to 0.0 (in xmm0)
-    vxorps xmm0, xmm0, xmm0
-
-    ; Inner loop over common dimension (index k)
-    xor r14, r14        ; r14 = k = 0
-inner_loop_k:
-    cmp r14, r10
-    jge finish_inner_j  ; if k >= A_cols, finish inner loop
-
-    ; Calculate address for A[i][k]:
-    ; Offset = (i * A_cols + k) * 4
+    ; Compute pointer to current result row:
+    ; result_row_ptr = result_base (rbx) + i * (B_cols * 4)
     mov rax, r12
-    imul rax, r10       ; rax = i * A_cols
-    add rax, r14        ; rax = i * A_cols + k
-    mov rcx, rax
-    shl rcx, 2          ; multiply index by 4 (size of float)
-    movss xmm1, dword [rsi + rcx]   ; xmm1 = A[i][k]
+    imul rax, r15         ; rax = i * B_row_stride
+    mov rdx, rbx          ; rdx = result base pointer
+    add rdx, rax          ; now rdx points to row i of the result
 
-    ; Calculate address for B[k][j]:
-    ; Offset = (k * B_cols + j) * 4
+    ; Inner loop: iterate over columns in the current result row.
+    ; We'll process blocks of 8 floats (32 bytes) if possible.
+    xor r13, r13          ; r13 = column offset (in bytes) = 0
+inner_loop:
+    cmp r13, r15
+    jge next_row          ; if we've processed B_cols*4 bytes, move to next row
+
+    ; Check if at least 8 floats remain (8*4 = 32 bytes)
+    mov rax, r15
+    sub rax, r13
+    cmp rax, 32
+    jl scalar_remainder   ; if fewer than 32 bytes, do scalar loop
+
+    ; ----- Vectorized block: Process 8 floats at once -----
+    vxorps ymm0, ymm0, ymm0      ; zero accumulator in ymm0
+
+    ; Loop over the common dimension k = 0 to A_cols - 1.
+    xor r14, r14          ; r14 = k = 0
+vector_loop_k:
+    cmp r14, r10
+    jge vector_store_block
+
+    ; Load A[i][k] from current row of A.
+    vmovss xmm1, dword [rsi + r14*4]
+    vbroadcastss ymm2, xmm1    ; broadcast A[i][k] to all lanes
+
+    ; Compute address for B[k][j...j+7]:
+    ; rax = B_base + k*(B_cols*4) + current column offset (r13)
     mov rax, r14
-    imul rax, r11       ; rax = k * B_cols
-    add rax, r13        ; rax = k * B_cols + j
-    mov rcx, rax
-    shl rcx, 2          ; multiply index by 4
-    movss xmm2, dword [rdi + rcx]   ; xmm2 = B[k][j]
+    imul rax, r15         ; rax = k * B_row_stride
+    add rax, r13          ; add current block's column offset
+    add rax, rdi          ; add B's data base pointer
+    vmovups ymm3, [rax]   ; load 8 floats from B[k][j...j+7]
 
-    ; Multiply the two elements and accumulate into sum:
-    mulss xmm1, xmm2    ; xmm1 = A[i][k] * B[k][j]
-    addss xmm0, xmm1    ; sum += xmm1
+    ; FMA: accumulate A[i][k] * B[k][j...j+7] into ymm0.
+    vfmadd231ps ymm0, ymm2, ymm3
 
     inc r14
-    jmp inner_loop_k
+    jmp vector_loop_k
 
-finish_inner_j:
-    ; Store the computed sum in result[i][j]:
-    ; Offset = (i * B_cols + j) * 4
-    mov rax, r12
-    imul rax, r11       ; rax = i * B_cols
-    add rax, r13        ; rax = i * B_cols + j
-    mov rcx, rax
-    shl rcx, 2          ; compute byte offset
-    movss dword [rbx + rcx], xmm0
+vector_store_block:
+    ; Store the computed 8-float block into the result row.
+    vmovups [rdx + r13], ymm0
+    add r13, 32           ; advance column offset by 32 bytes (8 floats)
+    jmp inner_loop
 
-    inc r13
-    jmp inner_loop_j
+    ; ----- Scalar remainder: process leftover columns -----
+scalar_remainder:
+    ; Determine how many floats remain: (B_row_stride - r13) / 4.
+    mov rax, r15
+    sub rax, r13
+    shr rax, 2          ; rax = number of remaining floats
+    mov rcx, rax        ; rcx = count of scalar columns to process
 
-next_i:
-    inc r12
+    ; Use r8 as the scalar column index j.
+    xor r8, r8         ; r8 = j = 0
+scalar_loop_j:
+    cmp r8, rcx
+    jge next_row
+
+    ; Compute scalar offset for current element: offset = r13 + j*4.
+    mov rax, r8
+    imul rax, 4
+    add rax, r13      ; rax now holds the byte offset in the result row
+
+    ; Initialize accumulator (in xmm0) to 0.
+    vxorps xmm0, xmm0, xmm0
+
+    ; Loop over common dimension k for this scalar element.
+    xor r14, r14     ; r14 = k = 0
+scalar_loop_k:
+    cmp r14, r10
+    jge scalar_store
+
+    ; Load A[i][k]
+    vmovss xmm1, dword [rsi + r14*4]
+
+    ; Compute address for B[k][j]:
+    ; Use rcx as a scratch register (preserve its current value).
+    push rcx            ; save rcx (which holds the scalar loop count)
+    mov rcx, r14        ; use rcx for k
+    imul rcx, r15       ; rcx = k * B_row_stride
+    add rcx, rax        ; add the scalar offset for column j
+    add rcx, rdi        ; add base pointer for B's data
+    vmovss xmm2, dword [rcx]
+    pop rcx             ; restore scalar loop count
+    vfmadd231ss xmm0, xmm1, xmm2
+
+    inc r14
+    jmp scalar_loop_k
+scalar_store:
+    ; Store the computed scalar result into the result row.
+    vmovss dword [rdx + rax], xmm0
+    inc r8
+    jmp scalar_loop_j
+
+next_row:
+    ; Finished processing the current row.
+    ; Advance A pointer to the next row by A_row_stride (stored in rbp).
+    add rsi, rbp
+
+    inc r12          ; next row
     jmp outer_loop
 
-mul_done:
-    ; Restore nonvolatile registers and return.
+done_outer_loop:
+    ; Epilogue – restore registers and return.
+    pop r15
     pop r14
     pop r13
     pop r12
     pop rdi
     pop rsi
     pop rbx
+    pop rbp
+    ret
+
+matrix_error_exit:
+    ; Simple error handler: dimensions mismatch.
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    pop rbp
     ret
