@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <time.h>  // For timing functions
 
 /*
  * The tests were written by LLM
@@ -29,6 +30,8 @@ extern "C" void asm_matrix_set(Matrix* mat, int row, int col, float value);
 extern "C" void asm_matrix_add(Matrix* a, Matrix* b, Matrix* result);
 extern "C" void asm_matrix_multiply(Matrix* a, Matrix* b, Matrix* result);
 extern "C" void asm_matrix_scalar_mul(Matrix* mat, float scalar, Matrix* result);
+extern "C" void asm_matrix_strassen(Matrix* a, Matrix* b, Matrix* result);
+
 
 int float_equal(float a, float b, float tol) {
     return fabs(a - b) < tol;
@@ -381,6 +384,281 @@ int test_matrix_multiplication_32x32() {
 
 
 
+// Speed test for matrix addition.
+void speed_test_matrix_addition(int size, int iterations) {
+    Matrix *a = asm_matrix_create(size, size);
+    Matrix *b = asm_matrix_create(size, size);
+    Matrix *result = asm_matrix_create(size, size);
+
+    // Fill matrices with sequential values.
+    for (int i = 0; i < size; i++) {
+        for (int j = 0; j < size; j++) {
+            float val = (float)(i * size + j + 1);
+            asm_matrix_set(a, i, j, val);
+            asm_matrix_set(b, i, j, val);
+        }
+    }
+
+    clock_t start = clock();
+    for (int iter = 0; iter < iterations; iter++) {
+        asm_matrix_add(a, b, result);
+    }
+    clock_t end = clock();
+
+    double time_spent = (double)(end - start) / CLOCKS_PER_SEC;
+    printf(COLOR_YELLOW "Speed Test: Matrix Addition %dx%d, %d iterations, total time: %.6f seconds, average time per addition: %.6f seconds.\n" COLOR_RESET,
+           size, size, iterations, time_spent, time_spent / iterations);
+
+    asm_matrix_free(a);
+    asm_matrix_free(b);
+    asm_matrix_free(result);
+}
+
+// Speed test for matrix scalar multiplication.
+void speed_test_matrix_scalar_multiplication(int size, int iterations, float scalar) {
+    Matrix *mat = asm_matrix_create(size, size);
+    Matrix *result = asm_matrix_create(size, size);
+
+    // Fill matrix with sequential values.
+    for (int i = 0; i < size; i++) {
+        for (int j = 0; j < size; j++) {
+            asm_matrix_set(mat, i, j, (float)(i * size + j + 1));
+        }
+    }
+
+    clock_t start = clock();
+    for (int iter = 0; iter < iterations; iter++) {
+        asm_matrix_scalar_mul(mat, scalar, result);
+    }
+    clock_t end = clock();
+
+    double time_spent = (double)(end - start) / CLOCKS_PER_SEC;
+    printf(COLOR_YELLOW "Speed Test: Matrix Scalar Multiplication %dx%d, %d iterations, scalar=%.2f, total time: %.6f seconds, average time per multiplication: %.6f seconds.\n" COLOR_RESET,
+           size, size, iterations, scalar, time_spent, time_spent / iterations);
+
+    asm_matrix_free(mat);
+    asm_matrix_free(result);
+}
+void speed_test_matrix_multiplication_4096() {
+    int size = 4096;
+    int iterations = 1;  // Use only one iteration due to the heavy computation.
+    Matrix *a = asm_matrix_create(size, size);
+    Matrix *b = asm_matrix_create(size, size);
+    Matrix *result = asm_matrix_create(size, size);
+
+    // Fill matrices with sequential values.
+    for (int i = 0; i < size; i++) {
+        for (int j = 0; j < size; j++) {
+            float val = (float)(i * size + j + 1);
+            asm_matrix_set(a, i, j, val);
+            asm_matrix_set(b, i, j, val);
+        }
+    }
+
+    clock_t start = clock();
+    for (int iter = 0; iter < iterations; iter++) {
+        asm_matrix_multiply(a, b, result);
+    }
+    clock_t end = clock();
+
+    double time_spent = (double)(end - start) / CLOCKS_PER_SEC;
+    printf(COLOR_YELLOW "Speed Test: Matrix Multiplication %dx%d, %d iteration, total time: %.6f seconds, average time: %.6f seconds.\n" COLOR_RESET,
+           size, size, iterations, time_spent, time_spent / iterations);
+
+    asm_matrix_free(a);
+    asm_matrix_free(b);
+    asm_matrix_free(result);
+}
+
+// Test: Matrix Strassen Multiplication (Base Case: 1x1)
+// This test multiplies two 1x1 matrices using Strassen's algorithm.
+int test_matrix_strassen_1x1() {
+    int errors = 0;
+    const char *test_name = "Matrix Strassen (1x1)";
+    Matrix *a = asm_matrix_create(1, 1);
+    Matrix *b = asm_matrix_create(1, 1);
+    Matrix *result = asm_matrix_create(1, 1);
+
+    // Set a[0][0] = 2.0 and b[0][0] = 3.0; expected result = 6.0.
+    asm_matrix_set(a, 0, 0, 2.0f);
+    asm_matrix_set(b, 0, 0, 3.0f);
+
+    // Call the assembly-implemented Strassen multiplication.
+    asm_matrix_strassen(a, b, result);
+
+    // Check the result.
+    if (!float_equal(asm_matrix_get(result, 0, 0), 6.0f, 1e-6)) {
+        REPORT_FAIL(test_name, "Incorrect multiplication result for 1x1 matrix.");
+        errors++;
+    } else {
+        REPORT_PASS(test_name);
+    }
+
+    asm_matrix_free(a);
+    asm_matrix_free(b);
+    asm_matrix_free(result);
+    return errors;
+}
+
+// Test: Matrix Strassen Multiplication (16x16)
+// Fills matrices A and B with sequential values, computes the expected result using naive multiplication,
+// and compares the output of asm_matrix_strassen to the expected values.
+int test_matrix_strassen_16x16() {
+    int errors = 0;
+    const char *test_name = "Matrix Strassen (16x16)";
+    int size = 16;
+    Matrix *a = asm_matrix_create(size, size);
+    Matrix *b = asm_matrix_create(size, size);
+    Matrix *result = asm_matrix_create(size, size);
+    float expected[16][16];
+
+    // Fill matrix A with sequential values: A[i][j] = i * size + j + 1.
+    int val = 1;
+    for (int i = 0; i < size; i++) {
+        for (int j = 0; j < size; j++) {
+            asm_matrix_set(a, i, j, (float)val);
+            val++;
+        }
+    }
+
+    // Fill matrix B with sequential values: B[i][j] = i * size + j + 1.
+    val = 1;
+    for (int i = 0; i < size; i++) {
+        for (int j = 0; j < size; j++) {
+            asm_matrix_set(b, i, j, (float)val);
+            val++;
+        }
+    }
+
+    // Compute expected result using a naive multiplication.
+    for (int i = 0; i < size; i++) {
+        for (int j = 0; j < size; j++) {
+            float sum = 0.0f;
+            for (int k = 0; k < size; k++) {
+                sum += asm_matrix_get(a, i, k) * asm_matrix_get(b, k, j);
+            }
+            expected[i][j] = sum;
+        }
+    }
+
+    // Call the assembly-implemented Strassen multiplication.
+    asm_matrix_strassen(a, b, result);
+
+    // Validate the result element-by-element.
+    for (int i = 0; i < size; i++) {
+        for (int j = 0; j < size; j++) {
+            float res_val = asm_matrix_get(result, i, j);
+            if (!float_equal(res_val, expected[i][j], 1e-3)) {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "Incorrect value at (%d, %d): expected %.3f, got %.3f",
+                         i, j, expected[i][j], res_val);
+                REPORT_FAIL(test_name, msg);
+                errors++;
+            }
+        }
+    }
+    if (errors == 0)
+        REPORT_PASS(test_name);
+
+    asm_matrix_free(a);
+    asm_matrix_free(b);
+    asm_matrix_free(result);
+    return errors;
+}
+
+
+void speed_test_matrix_strassen(int size, int iterations) {
+    Matrix *a = asm_matrix_create(size, size);
+    Matrix *b = asm_matrix_create(size, size);
+    Matrix *result = asm_matrix_create(size, size);
+
+    // Fill matrices with sequential values.
+    for (int i = 0; i < size; i++) {
+        for (int j = 0; j < size; j++) {
+            float val = (float)(i * size + j + 1);
+            asm_matrix_set(a, i, j, val);
+            asm_matrix_set(b, i, j, val);
+        }
+    }
+
+    clock_t start = clock();
+    for (int iter = 0; iter < iterations; iter++) {
+        asm_matrix_strassen(a, b, result);
+    }
+    clock_t end = clock();
+
+    double time_spent = (double)(end - start) / CLOCKS_PER_SEC;
+    printf(COLOR_YELLOW "Speed Test: Matrix Strassen Multiplication %dx%d, %d iterations, total time: %.6f seconds, average time per multiplication: %.6f seconds.\n" COLOR_RESET,
+           size, size, iterations, time_spent, time_spent / iterations);
+
+    asm_matrix_free(a);
+    asm_matrix_free(b);
+    asm_matrix_free(result);
+}
+
+// Dedicated speed test for 4096x4096 matrices using Strassen multiplication.
+void speed_test_matrix_strassen_4096() {
+    int size = 4096;
+    int iterations = 1;  // One iteration due to heavy computation.
+    Matrix *a = asm_matrix_create(size, size);
+    Matrix *b = asm_matrix_create(size, size);
+    Matrix *result = asm_matrix_create(size, size);
+
+    // Fill matrices with sequential values.
+    for (int i = 0; i < size; i++) {
+        for (int j = 0; j < size; j++) {
+            float val = (float)(i * size + j + 1);
+            asm_matrix_set(a, i, j, val);
+            asm_matrix_set(b, i, j, val);
+        }
+    }
+
+    clock_t start = clock();
+    for (int iter = 0; iter < iterations; iter++) {
+        asm_matrix_strassen(a, b, result);
+    }
+    clock_t end = clock();
+
+    double time_spent = (double)(end - start) / CLOCKS_PER_SEC;
+    printf(COLOR_YELLOW "Speed Test: Matrix Strassen Multiplication %dx%d, %d iteration, total time: %.6f seconds, average time: %.6f seconds.\n" COLOR_RESET,
+           size, size, iterations, time_spent, time_spent / iterations);
+
+    asm_matrix_free(a);
+    asm_matrix_free(b);
+    asm_matrix_free(result);
+}
+
+
+// Speed test for matrix multiplication.
+void speed_test_matrix_multiplication(int size, int iterations) {
+    Matrix *a = asm_matrix_create(size, size);
+    Matrix *b = asm_matrix_create(size, size);
+    Matrix *result = asm_matrix_create(size, size);
+
+    // Fill matrices with sequential values.
+    for (int i = 0; i < size; i++) {
+        for (int j = 0; j < size; j++) {
+            float val = (float)(i * size + j + 1);
+            asm_matrix_set(a, i, j, val);
+            asm_matrix_set(b, i, j, val);
+        }
+    }
+
+    clock_t start = clock();
+    for (int iter = 0; iter < iterations; iter++) {
+        asm_matrix_multiply(a, b, result);
+    }
+    clock_t end = clock();
+
+    double time_spent = (double)(end - start) / CLOCKS_PER_SEC;
+    printf(COLOR_YELLOW "Speed Test: Matrix Multiplication %dx%d, %d iterations, total time: %.6f seconds, average time per multiplication: %.6f seconds.\n" COLOR_RESET,
+           size, size, iterations, time_spent, time_spent / iterations);
+
+    asm_matrix_free(a);
+    asm_matrix_free(b);
+    asm_matrix_free(result);
+}
+
 int main() {
     int total_errors = 0;
     printf(COLOR_YELLOW "Starting matrix tests...\n" COLOR_RESET);
@@ -388,11 +666,11 @@ int main() {
     total_errors += test_matrix_create();
     total_errors += test_matrix_free();
     total_errors += test_matrix_set_get();
-
-
-     total_errors += test_matrix_edge_cases();
-     total_errors += test_matrix_addition();
-     total_errors += test_matrix_scalar_multiplication();
+    total_errors += test_matrix_edge_cases();
+    total_errors += test_matrix_addition();
+    total_errors += test_matrix_scalar_multiplication();
+    total_errors += test_matrix_strassen_1x1();
+    total_errors += test_matrix_strassen_16x16();
     total_errors += test_matrix_multiplication_16x16();
     total_errors += test_matrix_multiplication();
     total_errors += test_matrix_multiplication_32x32();
@@ -402,6 +680,33 @@ int main() {
     else
         printf(COLOR_RED "\nTotal errors encountered: %d\n" COLOR_RESET, total_errors);
 
+    printf(COLOR_YELLOW "\nStarting speed tests...\n" COLOR_RESET);
+    speed_test_matrix_multiplication(128, 100);
+    speed_test_matrix_addition(128, 1000);
+    speed_test_matrix_scalar_multiplication(128, 1000, 2.0f);
+  //  speed_test_matrix_multiplication_4096();
+
+    // Additional speed tests for naive multiplication
+    printf(COLOR_YELLOW "\nStarting additional speed tests for naive multiplication (64x64, 128x128, 256x256)...\n" COLOR_RESET);
+    speed_test_matrix_multiplication(64, 1000);
+    speed_test_matrix_multiplication(128, 500);
+    speed_test_matrix_multiplication(256, 100);
+    speed_test_matrix_multiplication(512, 100);
+
+
+
+    // Additional speed tests for Strassen multiplication
+    printf(COLOR_YELLOW "\nStarting additional speed tests for Strassen multiplication (64x64, 128x128, 256x256)...\n" COLOR_RESET);
+    speed_test_matrix_strassen(64, 1000);
+    speed_test_matrix_strassen(128, 500);
+    speed_test_matrix_strassen(256, 100);
+    speed_test_matrix_strassen(512, 100);
+
+
+
+    // Speed test for Strassen multiplication 4096x4096
+ //   printf(COLOR_YELLOW "\nStarting speed test for Strassen multiplication (4096x4096)...\n" COLOR_RESET);
+ //   speed_test_matrix_strassen_4096();
+
     return total_errors;
 }
-

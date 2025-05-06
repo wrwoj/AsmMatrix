@@ -33,5 +33,9 @@ elseif (UNIX)
 endif()
 
 
-set(SOURCE_FILES main.cpp matrix.asm)
+set(SOURCE_FILES Matrix-naive/matrix.asm main.cpp Matrix-naive/asm_matrix_strassen.asm)
+
+
+
+
 add_executable(untitled1 ${SOURCE_FILES})
